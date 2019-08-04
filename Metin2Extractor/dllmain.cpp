@@ -286,7 +286,7 @@ bool packGet(const std::string& stInputFileName, std::string stOutputFileName)
 	}
 
 	auto dwMappedFileSize = *(uint32_t*)((uint32_t)&gs_vMappedFileBuffer[0] + gs_MappedFileSizeOffset);
-	// DebugLogf("Size: %u", dwMappedFileSize);
+	DebugLogf("Size: %u", dwMappedFileSize);
 	if (!dwMappedFileSize)
 		return bRet;
 
@@ -317,7 +317,7 @@ bool packGet(const std::string& stInputFileName, std::string stOutputFileName)
 		DebugLogf("file can not open");
 		return bRet;
 	}
-	fwrite(vBuffer.data(), 1, vBuffer.size() - 1, pFile);
+	fwrite(vBuffer.data(), 1, vBuffer.size(), pFile);
 	fclose(pFile);
 
 	bRet = true;
@@ -392,6 +392,7 @@ void MainRoutine()
 	}
 	arrBytes.fill(0x0);
 	pStringPattern.reset();
+	DebugLogf("String address: %u", pStringAddress);
 
 	auto pFuncAddress = SearchFunction(pStringAddress);
 	if (!pFuncAddress)
@@ -399,12 +400,26 @@ void MainRoutine()
 		MessageBoxA(0, "SearchFunction fail", 0, 0);
 		return;
 	}
+	DebugLogf("Func address: %u", pFuncAddress);
+
+	auto hUser32 = LoadLibraryA("user32.dll");
+	if (!hUser32)
+	{
+		MessageBoxA(0, "LoadLibraryA fail", 0, 0);
+		return;
+	}
+	auto dwMessageBox = (DWORD)GetProcAddress(hUser32, "MessageBoxA");
+	if (!dwMessageBox)
+	{
+		MessageBoxA(0, "GetProcAddress fail", 0, 0);
+		return;
+	}
 
 	auto vCallPtrs = std::vector<uintptr_t>();
 	auto dwMFileCall = 0UL;
 	auto dwStart = pFuncAddress;
 
-	while (vCallPtrs.size() != 3)
+	while (vCallPtrs.size() != 4)
 	{
 		if (*(BYTE*)dwStart == 0xE8)
 			vCallPtrs.emplace_back(dwStart);
@@ -433,6 +448,7 @@ void MainRoutine()
 		MessageBoxA(0, xorstr("Address1 find fail").crypt_get(), 0, 0);
 		return;
 	}
+	DebugLogf("gs_MappedFileLoadPtr: %p", (void*)gs_MappedFileLoadPtr);
 
 	// 1
 	// Tracef("CPythonNonPlayer::LoadNonPlayerData: %s, sizeof(TMobTable)=%u\n", c_szFileName, sizeof(TMobTable));
@@ -444,15 +460,26 @@ void MainRoutine()
 		MessageBoxA(0, xorstr("Address2.1 find fail").crypt_get(), 0, 0);
 		return;
 	}
+	DebugLogf("pClassPtrGet: %p", (void*)pClassPtrGet);
+
 	gs_EterPackManagerClassPtr = (uintptr_t)pClassPtrGet();
 	if (!gs_EterPackManagerClassPtr)
 	{
 		MessageBoxA(0, xorstr("Address2.2 find fail").crypt_get(), 0, 0);
 		return;
 	}
+	DebugLogf("gs_EterPackManagerClassPtr: %p", (void*)gs_EterPackManagerClassPtr);
 
 	// 3
-	gs_EterPackManagerGetAddress = (uintptr_t)Relative2Absolute(vCallPtrs.at(2), 1, 5);
+	auto dwLastCall = (uintptr_t)Relative2Absolute(vCallPtrs.at(2), 1, 5);
+	if (dwLastCall == dwMessageBox)
+	{
+		MessageBoxA(0, "MessageBox detected", 0, 0);
+		dwLastCall = (uintptr_t)Relative2Absolute(vCallPtrs.at(3), 1, 5);
+	}
+	DebugLogf("gs_EterPackManagerGetAddress: %p", (void*)dwLastCall);
+
+	gs_EterPackManagerGetAddress = dwLastCall;
 	if (!gs_EterPackManagerGetAddress)
 	{
 		MessageBoxA(0, xorstr("Address3 find fail").crypt_get(), 0, 0);
