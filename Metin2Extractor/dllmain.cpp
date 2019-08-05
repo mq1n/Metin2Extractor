@@ -732,10 +732,12 @@ void MainRoutine()
 		DebugLogf("1/ gs_EterPackManagerClassPtr: %p", (void*)gs_EterPackManagerClassPtr);
 		if (gs_nCallConvType == CC_TYPE_STDCALL)
 		{
-			if (!AnalyseArgCount(vCallPtrs.at(0), vCallPtrs.at(1)))
-				AnalyseArgCount(vCallPtrs.at(1), vCallPtrs.at(2));
+			if (AnalyseArgCount(vCallPtrs.at(0), vCallPtrs.at(1)))
+				gs_EterPackManagerGetAddress = (uintptr_t)Relative2Absolute(vCallPtrs.at(1), 1, 5);
 
-			gs_EterPackManagerGetAddress = (uintptr_t)Relative2Absolute(vCallPtrs.at(2), 1, 5);
+			else if (AnalyseArgCount(vCallPtrs.at(1), vCallPtrs.at(2)))
+				gs_EterPackManagerGetAddress = (uintptr_t)Relative2Absolute(vCallPtrs.at(2), 1, 5);
+
 			DebugLogf("gs_EterPackManagerGetAddress: %p", (void*)gs_EterPackManagerGetAddress);
 			if (!gs_EterPackManagerGetAddress)
 			{
