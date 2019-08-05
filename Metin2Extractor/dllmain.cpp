@@ -157,9 +157,10 @@ uintptr_t SearchPattern(std::shared_ptr <SPattern> pattern)
 uint32_t SearchFunction(uint32_t dwRefAddr)
 {
 //	char msg[250];
+	DebugLogf("SearchFunction ref: %p", dwRefAddr);
 
-	uint32_t target = 0;
-	auto baseAddress = (uint32_t)GetModuleHandleA(0);
+	uint32_t dwTarget = 0;
+	auto baseAddress = 0;
 	DebugLogf("Main base: %p", baseAddress);
 
 	uint32_t dwStart = 0;
@@ -169,7 +170,11 @@ uint32_t SearchFunction(uint32_t dwRefAddr)
 	MEMORY_BASIC_INFORMATION mbi = { 0 };
 	while (bufferSize = VirtualQueryEx(NtCurrentProcess, reinterpret_cast<LPCVOID>(baseAddress), &mbi, sizeof(mbi)))
 	{
-		auto pworkingSetExInformation = PSAPI_WORKING_SET_EX_INFORMATION { mbi.BaseAddress, 0 };
+		if (reinterpret_cast<uint32_t>(mbi.BaseAddress) < 0x400000)
+			goto ContinueLoop;
+
+		DebugLogf("current page: %p/%p %u -- %p %p",
+			mbi.BaseAddress, (DWORD)mbi.BaseAddress + mbi.RegionSize, mbi.RegionSize, mbi.State, mbi.Protect);
 
 		if (mbi.State != MEM_COMMIT)
 			goto ContinueLoop;
@@ -180,29 +185,26 @@ uint32_t SearchFunction(uint32_t dwRefAddr)
 		case PAGE_READWRITE:
 		case PAGE_EXECUTE_READ:
 		case PAGE_EXECUTE_READWRITE:
+		case PAGE_EXECUTE_WRITECOPY:
 			break;
 		default:
 			goto ContinueLoop;
 		}
 
-		if (QueryWorkingSetEx(GetCurrentProcess(), &pworkingSetExInformation, sizeof(pworkingSetExInformation)) &&
-			!pworkingSetExInformation.VirtualAttributes.Valid)
-		{
-			goto ContinueLoop;
-		}
-
+		DebugLogf("processing...");
 		dwStart = (uint32_t)mbi.BaseAddress;
-		dwEnd = (uint32_t)mbi.BaseAddress + mbi.RegionSize;
-
-//		sprintf_s(msg, "Start: %p End: %p", dwStart, dwEnd);
-//		OutputDebugStringA(msg);
+		dwEnd = (uint32_t)((uint32_t)mbi.BaseAddress + mbi.RegionSize) - sizeof(uint32_t);
 
 		while (*(uint32_t*)dwStart != dwRefAddr && dwStart < dwEnd)
+		{
+			// DebugLogf("cur: %p", dwStart);
 			dwStart++;
+		}
 
 		if (dwStart != dwEnd)
 		{
-			target = dwStart;
+			dwTarget = dwStart;
+			DebugLogf("Func found! Target: %p", dwTarget);
 			break;
 		}
 
@@ -210,10 +212,8 @@ uint32_t SearchFunction(uint32_t dwRefAddr)
 		baseAddress += mbi.RegionSize;
 	}
 
-//	sprintf_s(msg, "Found: %p", dwStart);
-//	OutputDebugStringA(msg);
-
-	return dwStart;
+	DebugLogf("Found: %p", dwTarget);
+	return dwTarget;
 }
 
 #define Relative2Absolute(pBase, dwOffset, dwLength) (PVOID)((SIZE_T)pBase + (*(PLONG)((PBYTE)pBase + dwOffset)) + dwLength)
@@ -455,8 +455,11 @@ DWORD WINAPI UnpackWorker(LPVOID)
 		case ARG_TYPE_5_ARG:
 			break;
 		default:
-			MessageBoxA(0, "Unknown arg count", std::to_string(gs_nArgType).c_str(), 0);
-			abort();
+//			MessageBoxA(0, "Unknown arg count", std::to_string(gs_nArgType).c_str(), 0);
+//			abort();
+			DebugLogf("Unknown arg count: %u Converted to default(3)", gs_nArgType);
+			gs_nArgType = ARG_TYPE_3_ARG;
+			break;
 	}
 	DebugLogf("Arg count type: %u", gs_nArgType);
 
@@ -479,13 +482,13 @@ DWORD WINAPI UnpackWorker(LPVOID)
 	return 0;
 }
 
-void AnalyseArgCount(uint32_t dwStartAddr, uint32_t dwEndAddr)
+bool AnalyseArgCount(uint32_t dwStartAddr, uint32_t dwEndAddr)
 {
 	if (gs_nArgType) // already defined by config
-		return;
+		return true;
 
-	dwStartAddr += 5; // skip curr func(tracef) call
-	dwEndAddr -= 1; // skip next func(eterpackmanager::get) call
+	dwStartAddr += 0x5; // skip curr func(tracef) call
+//	dwEndAddr -= 1; // skip next func(eterpackmanager::get) call
 	DebugLogf("AnalyseArgCount %p-%p(%u)", dwStartAddr, dwEndAddr, dwEndAddr - dwStartAddr);
 
 	auto nPushCount = 0;
@@ -508,6 +511,8 @@ void AnalyseArgCount(uint32_t dwStartAddr, uint32_t dwEndAddr)
 		gs_nArgType = ARG_TYPE_4_ARG;
 	else if (nPushCount == 5)
 		gs_nArgType = ARG_TYPE_5_ARG;
+
+	return (gs_nArgType != ARG_TYPE_NULL);
 }
 
 void MainRoutine()
@@ -727,9 +732,10 @@ void MainRoutine()
 		DebugLogf("1/ gs_EterPackManagerClassPtr: %p", (void*)gs_EterPackManagerClassPtr);
 		if (gs_nCallConvType == CC_TYPE_STDCALL)
 		{
-			AnalyseArgCount(vCallPtrs.at(0), vCallPtrs.at(1));
+			if (!AnalyseArgCount(vCallPtrs.at(0), vCallPtrs.at(1)))
+				AnalyseArgCount(vCallPtrs.at(1), vCallPtrs.at(2));
 
-			gs_EterPackManagerGetAddress = (uintptr_t)Relative2Absolute(vCallPtrs.at(1), 1, 5);
+			gs_EterPackManagerGetAddress = (uintptr_t)Relative2Absolute(vCallPtrs.at(2), 1, 5);
 			DebugLogf("gs_EterPackManagerGetAddress: %p", (void*)gs_EterPackManagerGetAddress);
 			if (!gs_EterPackManagerGetAddress)
 			{
@@ -740,10 +746,14 @@ void MainRoutine()
 		else // if (gs_EterPackManagerClassPtr)
 		{
 			gs_nCallConvType = CC_TYPE_THISCALL;
-			AnalyseArgCount(vCallPtrs.at(0), vCallPtrs.at(1));
+
+			if (AnalyseArgCount(vCallPtrs.at(0), vCallPtrs.at(1)))
+				gs_EterPackManagerGetAddress = (uintptr_t)Relative2Absolute(vCallPtrs.at(1), 1, 5);
+
+			else if (AnalyseArgCount(vCallPtrs.at(1), vCallPtrs.at(2)))
+				gs_EterPackManagerGetAddress = (uintptr_t)Relative2Absolute(vCallPtrs.at(2), 1, 5);
 
 			// 3
-			gs_EterPackManagerGetAddress = (uintptr_t)Relative2Absolute(vCallPtrs.at(1), 1, 5);
 			DebugLogf("gs_EterPackManagerGetAddress: %p", (void*)gs_EterPackManagerGetAddress);
 			if (!gs_EterPackManagerGetAddress)
 			{
