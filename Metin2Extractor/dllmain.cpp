@@ -455,10 +455,10 @@ DWORD WINAPI UnpackWorker(LPVOID)
 		case ARG_TYPE_5_ARG:
 			break;
 		default:
-//			MessageBoxA(0, "Unknown arg count", std::to_string(gs_nArgType).c_str(), 0);
-//			abort();
-			DebugLogf("Unknown arg count: %u Converted to default(3)", gs_nArgType);
-			gs_nArgType = ARG_TYPE_3_ARG;
+			MessageBoxA(0, "Unknown arg count", std::to_string(gs_nArgType).c_str(), 0);
+			abort();
+//			DebugLogf("Unknown arg count: %u Converted to default(3)", gs_nArgType);
+//			gs_nArgType = ARG_TYPE_3_ARG;
 			break;
 	}
 	DebugLogf("Arg count type: %u", gs_nArgType);
