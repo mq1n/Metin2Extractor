@@ -17,9 +17,9 @@ void DebugLog(const char* c_szLogData)
 	OutputDebugStringA(c_szLogData);
 }
 
-void DebugLogf(const char* c_szFormat, ...)
+void __DebugLogf(const char* c_szFormat, ...)
 {
-	char szBuffer[100000];
+	char szBuffer[16000];
 
 	va_list vaArgList;
 	va_start(vaArgList, c_szFormat);
@@ -29,6 +29,11 @@ void DebugLogf(const char* c_szFormat, ...)
 	DebugLog(szBuffer);
 }
 
+#ifdef _DEBUG
+#define DebugLogf(log, ...)	__DebugLogf(log, __VA_ARGS__);
+#else
+#define DebugLogf(log, ...)
+#endif
 
 typedef struct _MEM_PATTERN
 {
@@ -56,22 +61,50 @@ typedef struct _MEM_PATTERN
 	std::string _mask;
 } SPattern, * PPattern;
 
-
-inline bool ReadMemory(void* address, void* buffer, size_t size)
+void replaceAll(std::string& s, const std::string& search, const std::string& replace)
 {
-	ULONG dwReadByteCount = 0;
-	ULONG dwOldProtect = 0;
+	for (size_t pos = 0; ; pos += replace.length())
+	{
+		pos = s.find(search, pos);
+		if (pos == std::string::npos)
+			break;
+
+		s.erase(pos, search.length());
+		s.insert(pos, replace);
+	}
+}
+
+std::vector <std::string> DirectoryList(const std::string& input, const std::string& delim = "\\")
+{
+	auto list = std::vector<std::string>();
+
+	size_t start = 0;
+	auto end = input.find(delim);
+	while (end != std::string::npos)
+	{
+		list.emplace_back(input.substr(0, end));
+		start = end + delim.length();
+		end = input.find(delim, start);
+	}
+
+	return list;
+}
+
+inline bool ReadMemory(void* lpAddress, void* lpBuffer, size_t cbSize)
+{
+	auto dwReadByteCount = 0UL;
+	auto dwOldProtect = 0UL;
 	__try
 	{
-		if (VirtualProtectEx(NtCurrentProcess, address, size, PAGE_EXECUTE_READWRITE, &dwOldProtect))
+		if (VirtualProtectEx(NtCurrentProcess, lpAddress, cbSize, PAGE_EXECUTE_READWRITE, &dwOldProtect))
 		{
-			if (!ReadProcessMemory(NtCurrentProcess, address, buffer, size, &dwReadByteCount))
+			if (!ReadProcessMemory(NtCurrentProcess, lpAddress, lpBuffer, cbSize, &dwReadByteCount))
 			{
 				DebugLogf("ReadProcessMemory fail! Error: %u", GetLastError());
 				dwReadByteCount = 0;
 			}
 
-			VirtualProtectEx(NtCurrentProcess, address, size, dwOldProtect, &dwOldProtect);
+			VirtualProtectEx(NtCurrentProcess, lpAddress, cbSize, dwOldProtect, &dwOldProtect);
 		}
 		else
 		{
@@ -80,31 +113,31 @@ inline bool ReadMemory(void* address, void* buffer, size_t size)
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER)
 	{
-		DebugLogf("exception");
+		DebugLogf("ReadMemory exception handled");
 	}
 
-	return (dwReadByteCount && dwReadByteCount == size);
+	return (dwReadByteCount && dwReadByteCount == cbSize);
 }
 
-inline uint32_t FindPattern(uint8_t* address, size_t size, const std::shared_ptr <SPattern>& pattern)
+inline uintptr_t FindPattern(uint8_t* address, size_t size, const std::shared_ptr <SPattern>& pattern)
 {
-	std::vector <uint8_t> buffer(size);
+	auto vBuffer = std::vector <uint8_t>(size);
 
-	if (!ReadMemory(address, &buffer[0], size))
+	if (!ReadMemory(address, &vBuffer[0], size))
 	{
-		DebugLogf("Read fail ||| %p - %u(real) - %u(read) | %p\n", address, size, buffer.size(), pattern->GetBytes());
+		DebugLogf("FindPattern Read fail. %p - %u(real) - %u(read) | %p\n", address, size, vBuffer.size(), pattern->GetBytes());
 		return 0;
 	}
 
-	uint32_t dwResult = 0;
-	for (size_t i = 0; i + pattern->GetLength() < buffer.size(); ++i)
+	uintptr_t dwResult = 0;
+	for (size_t i = 0; i + pattern->GetLength() < vBuffer.size(); ++i)
 	{
 		auto bFound = true;
-		for (uint32_t j = 0UL; j < pattern->GetLength() && bFound; ++j)
+		for (size_t j = 0; j < pattern->GetLength() && bFound; ++j)
 		{
 			if (pattern->GetMask(j) == '?')
 				continue;
-			if (pattern->GetByte(j) == buffer[i + j])
+			if (pattern->GetByte(j) == vBuffer[i + j])
 				continue;
 
 			bFound = false;
@@ -112,7 +145,7 @@ inline uint32_t FindPattern(uint8_t* address, size_t size, const std::shared_ptr
 
 		if (bFound)
 		{
-			dwResult = (uint32_t)address + i;
+			dwResult = reinterpret_cast<uintptr_t>(address + i);
 			break;
 		}
 	}
@@ -122,59 +155,55 @@ inline uint32_t FindPattern(uint8_t* address, size_t size, const std::shared_ptr
 
 uintptr_t SearchPattern(std::shared_ptr <SPattern> pattern)
 {
-	uint32_t target = 0;
-	uint32_t baseAddress = 0;
-	MEMORY_BASIC_INFORMATION basicInfo = { 0 };
+	auto pTargetAddr = uintptr_t(0);
+	auto dwBaseAddress = 0UL;
+	auto mbi = MEMORY_BASIC_INFORMATION{ 0 };
 
 	auto bufferSize = 0ULL;
-	while (bufferSize = VirtualQueryEx(NtCurrentProcess, reinterpret_cast<LPCVOID>(baseAddress), &basicInfo, sizeof(basicInfo)))
+	while (bufferSize = VirtualQueryEx(NtCurrentProcess, reinterpret_cast<LPCVOID>(dwBaseAddress), &mbi, sizeof(mbi)))
 	{
-		//		char msg[128] = { 0 };
-		//		sprintf_s(msg, "Current region: %p-%u", basicInfo.BaseAddress, basicInfo.RegionSize);
-		//		OutputDebugStringA(msg);
+		// DebugLogf("SearchPattern - Current region: %p-%u", mbi.BaseAddress, mbi.RegionSize);
 
-		if (reinterpret_cast<uint32_t>(basicInfo.BaseAddress) < 0x400000)
-			goto ContinueLoop;
-
-		if (basicInfo.State != MEM_COMMIT)
-			goto ContinueLoop;
-		if (basicInfo.Protect == PAGE_NOACCESS)
-			goto ContinueLoop;
-		if (basicInfo.Protect & PAGE_GUARD)
-			goto ContinueLoop;
-
-		target = FindPattern(reinterpret_cast<uint8_t*>(basicInfo.BaseAddress), basicInfo.RegionSize, pattern);
-		if (target)
-			break;
-
-	ContinueLoop:
-		baseAddress += basicInfo.RegionSize;
-	}
-
-	return target;
-}
-
-uint32_t SearchFunction(uint32_t dwRefAddr)
-{
-//	char msg[250];
-	DebugLogf("SearchFunction ref: %p", dwRefAddr);
-
-	uint32_t dwTarget = 0;
-	auto baseAddress = 0;
-	DebugLogf("Main base: %p", baseAddress);
-
-	uint32_t dwStart = 0;
-	uint32_t dwEnd = 0;
-
-	auto bufferSize = 0ULL;
-	MEMORY_BASIC_INFORMATION mbi = { 0 };
-	while (bufferSize = VirtualQueryEx(NtCurrentProcess, reinterpret_cast<LPCVOID>(baseAddress), &mbi, sizeof(mbi)))
-	{
 		if (reinterpret_cast<uint32_t>(mbi.BaseAddress) < 0x400000)
 			goto ContinueLoop;
 
+		if (mbi.State != MEM_COMMIT)
+			goto ContinueLoop;
+		if (mbi.Protect == PAGE_NOACCESS)
+			goto ContinueLoop;
+		if (mbi.Protect & PAGE_GUARD)
+			goto ContinueLoop;
+
+		pTargetAddr = FindPattern(reinterpret_cast<uint8_t*>(mbi.BaseAddress), mbi.RegionSize, pattern);
+		if (pTargetAddr)
+			break;
+
+	ContinueLoop:
+		dwBaseAddress += mbi.RegionSize;
+	}
+
+	return pTargetAddr;
+}
+
+uintptr_t SearchFunction(uintptr_t pRefAddr)
+{
+	DebugLogf("SearchFunction ref: %p", pRefAddr);
+
+	auto pTarget = uintptr_t(0);
+	auto dwBaseAddress = 0UL;
+
+	auto pStart = uintptr_t(0);
+	auto pEnd = uintptr_t(0);
+
+	auto bufferSize = 0UL;
+	MEMORY_BASIC_INFORMATION mbi = { 0 };
+	while (bufferSize = VirtualQueryEx(NtCurrentProcess, reinterpret_cast<LPCVOID>(dwBaseAddress), &mbi, sizeof(mbi)))
+	{
+		if (reinterpret_cast<uintptr_t>(mbi.BaseAddress) < 0x400000)
+			goto ContinueLoop;
+
 		DebugLogf("current page: %p/%p %u -- %p %p",
-			mbi.BaseAddress, (DWORD)mbi.BaseAddress + mbi.RegionSize, mbi.RegionSize, mbi.State, mbi.Protect);
+			mbi.BaseAddress, reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize, mbi.RegionSize, mbi.State, mbi.Protect);
 
 		if (mbi.State != MEM_COMMIT)
 			goto ContinueLoop;
@@ -192,28 +221,28 @@ uint32_t SearchFunction(uint32_t dwRefAddr)
 		}
 
 		DebugLogf("processing...");
-		dwStart = (uint32_t)mbi.BaseAddress;
-		dwEnd = (uint32_t)((uint32_t)mbi.BaseAddress + mbi.RegionSize) - sizeof(uint32_t);
+		pStart = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+		pEnd = (reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize) - sizeof(uintptr_t);
 
-		while (*(uint32_t*)dwStart != dwRefAddr && dwStart < dwEnd)
+		while (*(uint32_t*)pStart != pRefAddr && pStart < pEnd)
 		{
 			// DebugLogf("cur: %p", dwStart);
-			dwStart++;
+			pStart++;
 		}
 
-		if (dwStart != dwEnd)
+		if (pStart != pEnd)
 		{
-			dwTarget = dwStart;
-			DebugLogf("Func found! Target: %p", dwTarget);
+			pTarget = pStart;
+			DebugLogf("Func found! Target: %p", pTarget);
 			break;
 		}
 
 	ContinueLoop:
-		baseAddress += mbi.RegionSize;
+		dwBaseAddress += mbi.RegionSize;
 	}
 
-	DebugLogf("Found: %p", dwTarget);
-	return dwTarget;
+	DebugLogf("Found: %p", pTarget);
+	return pTarget;
 }
 
 #define Relative2Absolute(pBase, dwOffset, dwLength) (PVOID)((SIZE_T)pBase + (*(PLONG)((PBYTE)pBase + dwOffset)) + dwLength)
@@ -252,38 +281,9 @@ static std::vector <uint8_t> gs_vMappedFileBuffer(0x2000);
 static uint8_t gs_nArgType = ARG_TYPE_NULL;
 static uint8_t gs_nCallConvType = CC_TYPE_NULL;
 
-void replaceAll(std::string& s, const std::string& search, const std::string& replace)
-{
-	for (size_t pos = 0; ; pos += replace.length())
-	{
-		pos = s.find(search, pos);
-		if (pos == std::string::npos)
-			break;
-
-		s.erase(pos, search.length());
-		s.insert(pos, replace);
-	}
-}
-
-std::vector <std::string> DirectoryList(const std::string& input, const std::string& delim = "\\")
-{
-	auto list = std::vector<std::string>();
-
-	size_t start = 0;
-	auto end = input.find(delim);
-	while (end != std::string::npos)
-	{
-		list.emplace_back(input.substr(0, end));
-		start = end + delim.length();
-		end = input.find(delim, start);
-	}
-
-	return list;
-}
-
 bool packGet(const std::string& stInputFileName, std::string stOutputFileName)
 {
-	bool bRet = false;
+	auto bRet = false;
 
 	DebugLogf("In: %s Out: %s", stInputFileName.c_str(), stOutputFileName.c_str());
 
@@ -297,22 +297,20 @@ bool packGet(const std::string& stInputFileName, std::string stOutputFileName)
 		DebugLogf("Mapped file initialized: %p", gs_vMappedFileBuffer.data());
 	}
 
-	DebugLogf("a");
 	void* pData = nullptr;
 	if (gs_nArgType == ARG_TYPE_3_ARG)
 	{
 		if (gs_nCallConvType == CC_TYPE_THISCALL)
 		{
-			DebugLogf("b1");
 			bRet = reinterpret_cast<TEterPackManagerGet_3_thiscall>(gs_EterPackManagerGetAddress)(
-				(void*)gs_EterPackManagerClassPtr, (void*)&gs_vMappedFileBuffer[0], stInputFileName.c_str(), &pData
+				reinterpret_cast<void*>(gs_EterPackManagerClassPtr), reinterpret_cast<void*>(&gs_vMappedFileBuffer[0]),
+				stInputFileName.c_str(), &pData
 			);
 		}
 		else
 		{
-			DebugLogf("b2");
 			bRet = reinterpret_cast<TEterPackManagerGet_3_stdcall>(gs_EterPackManagerGetAddress)(
-				(void*)&gs_vMappedFileBuffer[0], stInputFileName.c_str(), &pData
+				reinterpret_cast<void*>(&gs_vMappedFileBuffer[0]), stInputFileName.c_str(), &pData
 			);
 		}
 	}
@@ -320,16 +318,15 @@ bool packGet(const std::string& stInputFileName, std::string stOutputFileName)
 	{
 		if (gs_nCallConvType == CC_TYPE_THISCALL)
 		{
-			DebugLogf("b3");
 			bRet = reinterpret_cast<TEterPackManagerGet_4_thiscall>(gs_EterPackManagerGetAddress)(
-				(void*)gs_EterPackManagerClassPtr, (void*)&gs_vMappedFileBuffer[0], stInputFileName.c_str(), &pData, 0
+				reinterpret_cast<void*>(gs_EterPackManagerClassPtr), reinterpret_cast<void*>(&gs_vMappedFileBuffer[0]),
+				stInputFileName.c_str(), &pData, 0
 			);
 		}
 		else
 		{
-			DebugLogf("b4");
 			bRet = reinterpret_cast<TEterPackManagerGet_4_stdcall>(gs_EterPackManagerGetAddress)(
-				(void*)&gs_vMappedFileBuffer[0], stInputFileName.c_str(), &pData, 0
+				reinterpret_cast<void*>(&gs_vMappedFileBuffer[0]), stInputFileName.c_str(), &pData, 0
 			);
 		}
 	}
@@ -337,46 +334,44 @@ bool packGet(const std::string& stInputFileName, std::string stOutputFileName)
 	{
 		if (gs_nCallConvType == CC_TYPE_THISCALL)
 		{
-			DebugLogf("b5");
 			bRet = reinterpret_cast<TEterPackManagerGet_5_thiscall>(gs_EterPackManagerGetAddress)(
-				(void*)gs_EterPackManagerClassPtr, (void*)&gs_vMappedFileBuffer[0], stInputFileName.c_str(), &pData, "...", 0
+				reinterpret_cast<void*>(gs_EterPackManagerClassPtr), reinterpret_cast<void*>(&gs_vMappedFileBuffer[0]),
+				stInputFileName.c_str(), &pData, "...", 0
 			);
 		}
 		else
 		{
-			DebugLogf("b6");
 			bRet = reinterpret_cast<TEterPackManagerGet_5_stdcall>(gs_EterPackManagerGetAddress)(
-				(void*)&gs_vMappedFileBuffer[0], stInputFileName.c_str(), &pData, "...", 0
+				reinterpret_cast<void*>(&gs_vMappedFileBuffer[0]), stInputFileName.c_str(), &pData, "...", 0
 			);
 		}
 	}
-	DebugLogf("c %d-%p", bRet, pData);
+	DebugLogf("Result: %d Data ptr: %p", bRet ? 1 : 0, pData);
 	if (!bRet || !pData)
 		return bRet;
-	DebugLogf("d");
 
 	if (!gs_MappedFileSizeOffset)
 	{
-		auto dwStart = (uint32_t)&gs_vMappedFileBuffer[0];
+		auto pStart = reinterpret_cast<uintptr_t>(&gs_vMappedFileBuffer[0]);
 		while (!gs_MappedFileSizeOffset)
 		{
-			if (*(uint32_t*)dwStart == (uint32_t)pData) // m_pbBufLinkData
+			if (*(uintptr_t*)pStart == reinterpret_cast<uintptr_t>(pData)) // m_pbBufLinkData
 			{
-				gs_MappedFileSizeOffset = (dwStart - (uint32_t)&gs_vMappedFileBuffer[0]) + sizeof(uint32_t); // m_dwBufLinkSize
-				DebugLogf("size offset: %p", (void*)gs_MappedFileSizeOffset);
+				gs_MappedFileSizeOffset = (pStart - reinterpret_cast<uintptr_t>(&gs_vMappedFileBuffer[0])) + sizeof(uintptr_t); // m_dwBufLinkSize
+				DebugLogf("size offset: %p", reinterpret_cast<void*>(gs_MappedFileSizeOffset));
 				break;
 			}
-			dwStart++;
+			pStart++;
 		}
 	}
 
-	auto dwMappedFileSize = *(uint32_t*)((uint32_t)&gs_vMappedFileBuffer[0] + gs_MappedFileSizeOffset);
+	auto dwMappedFileSize = *(uint32_t*)(reinterpret_cast<uintptr_t>(&gs_vMappedFileBuffer[0]) + gs_MappedFileSizeOffset);
 	DebugLogf("Size: %u", dwMappedFileSize);
 	if (!dwMappedFileSize)
 		return bRet;
 
-	std::vector<wchar_t> vBuffer(dwMappedFileSize);
-	if (!ReadMemory((void*)pData, &vBuffer[0], dwMappedFileSize))
+	std::vector <wchar_t> vBuffer(dwMappedFileSize);
+	if (!ReadMemory(reinterpret_cast<void*>(pData), &vBuffer[0], dwMappedFileSize))
 	{
 		DebugLogf("read fail");
 		return bRet;
@@ -388,11 +383,11 @@ bool packGet(const std::string& stInputFileName, std::string stOutputFileName)
 		return bRet;
 	}
 		
-	auto directories = DirectoryList(stOutputFileName);
-	if (!directories.empty())
+	auto vSubFolderList = DirectoryList(stOutputFileName);
+	if (!vSubFolderList.empty())
 	{
-		for (const auto& current : directories)
-			CreateDirectoryA(current.c_str(), nullptr);
+		for (const auto& stSubFolder : vSubFolderList)
+			CreateDirectoryA(stSubFolder.c_str(), nullptr);
 	}
 	
 	FILE* pFile = nullptr;
@@ -414,7 +409,7 @@ bool UnpackList(const std::string& stListFileName)
 	std::ifstream in(stListFileName);
 	if (!in)
 	{
-		MessageBoxA(0, "list file can not read!", "", 0);
+		MessageBoxA(0, xorstr("list file can not read!").crypt_get(), "", 0);
 		return false;
 	}
 
@@ -426,26 +421,28 @@ bool UnpackList(const std::string& stListFileName)
 		DebugLogf("line: %s", stLine.c_str());
 
 		auto stNewFileName = std::string(stLine);
-		replaceAll(stNewFileName, "d:", "d_");
-		replaceAll(stNewFileName, "/", "\\");
-		auto stOutput = "dump\\" + stNewFileName;
+		replaceAll(stNewFileName, xorstr("d:").crypt_get(), xorstr("d_").crypt_get());
+		replaceAll(stNewFileName, xorstr("/").crypt_get(), xorstr("\\").crypt_get());
+
+		auto stOutputPath = xorstr("dump\\").crypt_get();
+		auto stOutput = stOutputPath + stNewFileName;
 
 		if (!packGet(stLine, stOutput))
 		{
-			std::ofstream f("unpack.log", std::ofstream::out | std::ofstream::app);
-			f << "File: " << stLine << " can NOT unpacked!" << std::endl;
+			std::ofstream f(xorstr("unpack.log").crypt_get(), std::ofstream::out | std::ofstream::app);
+			f << xorstr("File: ").crypt_get() << stLine << xorstr(" can NOT unpacked!").crypt_get() << std::endl;
 			f.close();
 		}
 	}
 
 	in.close();
-	MessageBoxA(0, "completed!", 0, 0);
+	MessageBoxA(0, xorstr("completed!").crypt_get(), 0, 0);
 	return true;
 }
 
 DWORD WINAPI UnpackWorker(LPVOID)
 {
-	MessageBoxA(0, "Initialized!", "", 0);
+	MessageBoxA(0, xorstr("Initialized!").crypt_get(), "", 0);
 
 	// Check arg types
 	switch (gs_nArgType)
@@ -455,7 +452,7 @@ DWORD WINAPI UnpackWorker(LPVOID)
 		case ARG_TYPE_5_ARG:
 			break;
 		default:
-			MessageBoxA(0, "Unknown arg count", std::to_string(gs_nArgType).c_str(), 0);
+			MessageBoxA(0, xorstr("Unknown arg count").crypt_get(), std::to_string(gs_nArgType).c_str(), 0);
 			abort();
 //			DebugLogf("Unknown arg count: %u Converted to default(3)", gs_nArgType);
 //			gs_nArgType = ARG_TYPE_3_ARG;
@@ -470,38 +467,38 @@ DWORD WINAPI UnpackWorker(LPVOID)
 		case CC_TYPE_THISCALL:
 			break;
 		default:
-			MessageBoxA(0, "Unknown call conv. type", std::to_string(gs_nCallConvType).c_str(), 0);
+			MessageBoxA(0, xorstr("Unknown call conv. type").crypt_get(), std::to_string(gs_nCallConvType).c_str(), 0);
 			abort();
 	}
 	DebugLogf("Call conv type: %u", gs_nCallConvType);
 
-	if (!std::filesystem::exists("dump"))
-		std::filesystem::create_directory("dump");
+	if (!std::filesystem::exists(xorstr("dump").crypt_get()))
+		std::filesystem::create_directory(xorstr("dump").crypt_get());
 
-	UnpackList("list.txt");
+	UnpackList(xorstr("list.txt").crypt_get());
 	return 0;
 }
 
-bool AnalyseArgCount(uint32_t dwStartAddr, uint32_t dwEndAddr)
+bool AnalyseArgCount(uintptr_t pStartAddr, uintptr_t pEndAddr)
 {
 	if (gs_nArgType) // already defined by config
 		return true;
 
-	dwStartAddr += 0x5; // skip curr func(tracef) call
+	pStartAddr += 0x5; // skip curr func(tracef) call
 //	dwEndAddr -= 1; // skip next func(eterpackmanager::get) call
-	DebugLogf("AnalyseArgCount %p-%p(%u)", dwStartAddr, dwEndAddr, dwEndAddr - dwStartAddr);
+	DebugLogf("AnalyseArgCount %p-%p(%u)", pStartAddr, pEndAddr, pEndAddr - pStartAddr);
 
 	auto nPushCount = 0;
-	auto dwCurrAddr = dwStartAddr;
-	while (dwCurrAddr < dwEndAddr)
+	auto pCurrAddr = pStartAddr;
+	while (pCurrAddr < pEndAddr)
 	{
-		auto pCurrByte = *(BYTE*)dwCurrAddr;
+		auto pCurrByte = *(uint8_t*)pCurrAddr;
 		if (pCurrByte >= 0x50 && pCurrByte <= 0x57) // https://i.vgy.me/XXeaWZ.png
 		{
 			DebugLogf("push opcode found: 0x%X", pCurrByte);
 			nPushCount++;
 		}
-		dwCurrAddr++;
+		pCurrAddr++;
 	}
 	DebugLogf("push count: %d", nPushCount);
 
@@ -518,7 +515,7 @@ bool AnalyseArgCount(uint32_t dwStartAddr, uint32_t dwEndAddr)
 void MainRoutine()
 {
 	uintptr_t pFuncAddress = 0;
-	std::ifstream in("unpack_config.txt", std::ios_base::binary);
+	std::ifstream in(xorstr("unpack_config.txt").crypt_get(), std::ios_base::binary);
 	if (in)
 	{
 		auto nLine = 0;
@@ -582,14 +579,14 @@ void MainRoutine()
 		auto pStringPattern = std::make_shared<SPattern>(c_szMask, arrBytes.data());
 		if (!pStringPattern.get())
 		{
-			MessageBoxA(0, "SPattern init fail", 0, 0);
+			MessageBoxA(0, xorstr("SPattern init fail").crypt_get(), 0, 0);
 			return;
 		}
 
 		auto pStringAddress = SearchPattern(pStringPattern);
 		if (!pStringAddress)
 		{
-			MessageBoxA(0, "SearchPattern fail", 0, 0);
+			MessageBoxA(0, xorstr("SearchPattern fail").crypt_get(), 0, 0);
 			return;
 		}
 		arrBytes.fill(0x0);
@@ -599,25 +596,26 @@ void MainRoutine()
 		pFuncAddress = SearchFunction(pStringAddress);
 		if (!pFuncAddress)
 		{
-			MessageBoxA(0, "SearchFunction fail", 0, 0);
+			MessageBoxA(0, xorstr("SearchFunction fail").crypt_get(), 0, 0);
 			return;
 		}
 		DebugLogf("Func address: %p", pFuncAddress);
 	}
 
-	auto hUser32 = LoadLibraryA("user32.dll");
+	auto hUser32 = LoadLibraryA(xorstr("user32.dll").crypt_get());
 	if (!hUser32)
 	{
-		MessageBoxA(0, "LoadLibraryA fail", 0, 0);
+		MessageBoxA(0, xorstr("LoadLibraryA fail").crypt_get(), 0, 0);
 		return;
 	}
-	auto dwMessageBox = (DWORD)GetProcAddress(hUser32, "MessageBoxA");
-	if (!dwMessageBox)
+	auto pMessageBox = reinterpret_cast<uintptr_t>(GetProcAddress(hUser32, xorstr("MessageBoxA").crypt_get()));
+	if (!pMessageBox)
 	{
-		MessageBoxA(0, "GetProcAddress fail", 0, 0);
+		MessageBoxA(0, xorstr("GetProcAddress fail").crypt_get(), 0, 0);
 		return;
 	}
-	DebugLogf("Messagebox %p", dwMessageBox);
+	DebugLogf("Messagebox %p", pMessageBox);
+
 
 	auto vCallPtrs = std::vector<uintptr_t>();
 	auto dwMFileCall = 0UL;
@@ -625,7 +623,7 @@ void MainRoutine()
 
 	while (vCallPtrs.size() != 3)
 	{
-		if (*(BYTE*)dwStart == 0xE8)
+		if (*(uint8_t*)dwStart == 0xE8)
 		{
 			vCallPtrs.emplace_back(dwStart);
 			DebugLogf("%u) %p", vCallPtrs.size(), dwStart);
@@ -646,7 +644,7 @@ void MainRoutine()
 	{
 		dwStart--;
 
-		if (*(BYTE*)dwStart == 0xE8)
+		if (*(uint8_t*)dwStart == 0xE8)
 			dwMFileCall = dwStart;
 	}
 
@@ -654,13 +652,13 @@ void MainRoutine()
 	// 
 
 	// -1 (logdan önceki ilk call)
-	gs_MappedFileLoadPtr = (uintptr_t)Relative2Absolute(dwMFileCall, 1, 5);
+	gs_MappedFileLoadPtr = reinterpret_cast<uintptr_t>(Relative2Absolute(dwMFileCall, 1, 5));
 	if (!gs_MappedFileLoadPtr)
 	{
 		MessageBoxA(0, xorstr("Address1 find fail").crypt_get(), 0, 0);
 		return;
 	}
-	DebugLogf("gs_MappedFileLoadPtr: %p", (void*)gs_MappedFileLoadPtr);
+	DebugLogf("gs_MappedFileLoadPtr: %p", reinterpret_cast<void*>(gs_MappedFileLoadPtr));
 
 	// 1
 	// Tracef("CPythonNonPlayer::LoadNonPlayerData: %s, sizeof(TMobTable)=%u\n", c_szFileName, sizeof(TMobTable));
@@ -680,7 +678,7 @@ void MainRoutine()
 				auto dwApiAddr = *(uint32_t*)(dwCurrAddr + sizeof(uint16_t));
 				auto dwApiPtr = *(uint32_t*)dwApiAddr;
 				DebugLogf("dwApiPtr: %p", dwApiPtr);
-				if (dwApiPtr == dwMessageBox)
+				if (dwApiPtr == pMessageBox)
 				{
 					pMemMsgBoxAddr = dwCurrAddr;
 					DebugLogf("msgbox found");
@@ -698,7 +696,7 @@ void MainRoutine()
 
 		while (vCallPtrs.size() != 3)
 		{
-			if (*(BYTE*)dwStart == 0xE8)
+			if (*(uint8_t*)dwStart == 0xE8)
 			{
 				vCallPtrs.emplace_back(dwStart);
 				DebugLogf("%u) %p", vCallPtrs.size(), dwStart);
@@ -729,16 +727,16 @@ void MainRoutine()
 			}
 			dwCurrAddr++;
 		}
-		DebugLogf("1/ gs_EterPackManagerClassPtr: %p", (void*)gs_EterPackManagerClassPtr);
+		DebugLogf("1/ gs_EterPackManagerClassPtr: %p", reinterpret_cast<void*>(gs_EterPackManagerClassPtr));
 		if (gs_nCallConvType == CC_TYPE_STDCALL)
 		{
 			if (AnalyseArgCount(vCallPtrs.at(0), vCallPtrs.at(1)))
-				gs_EterPackManagerGetAddress = (uintptr_t)Relative2Absolute(vCallPtrs.at(1), 1, 5);
+				gs_EterPackManagerGetAddress = reinterpret_cast<uintptr_t>(Relative2Absolute(vCallPtrs.at(1), 1, 5));
 
 			else if (AnalyseArgCount(vCallPtrs.at(1), vCallPtrs.at(2)))
-				gs_EterPackManagerGetAddress = (uintptr_t)Relative2Absolute(vCallPtrs.at(2), 1, 5);
+				gs_EterPackManagerGetAddress = reinterpret_cast<uintptr_t>(Relative2Absolute(vCallPtrs.at(2), 1, 5));
 
-			DebugLogf("gs_EterPackManagerGetAddress: %p", (void*)gs_EterPackManagerGetAddress);
+			DebugLogf("gs_EterPackManagerGetAddress: %p", reinterpret_cast<void*>(gs_EterPackManagerGetAddress));
 			if (!gs_EterPackManagerGetAddress)
 			{
 				MessageBoxA(0, xorstr("Address3 find fail").crypt_get(), 0, 0);
@@ -750,13 +748,13 @@ void MainRoutine()
 			gs_nCallConvType = CC_TYPE_THISCALL;
 
 			if (AnalyseArgCount(vCallPtrs.at(0), vCallPtrs.at(1)))
-				gs_EterPackManagerGetAddress = (uintptr_t)Relative2Absolute(vCallPtrs.at(1), 1, 5);
+				gs_EterPackManagerGetAddress = reinterpret_cast<uintptr_t>(Relative2Absolute(vCallPtrs.at(1), 1, 5));
 
 			else if (AnalyseArgCount(vCallPtrs.at(1), vCallPtrs.at(2)))
-				gs_EterPackManagerGetAddress = (uintptr_t)Relative2Absolute(vCallPtrs.at(2), 1, 5);
+				gs_EterPackManagerGetAddress = reinterpret_cast<uintptr_t>(Relative2Absolute(vCallPtrs.at(2), 1, 5));
 
 			// 3
-			DebugLogf("gs_EterPackManagerGetAddress: %p", (void*)gs_EterPackManagerGetAddress);
+			DebugLogf("gs_EterPackManagerGetAddress: %p", reinterpret_cast<void*>(gs_EterPackManagerGetAddress));
 			if (!gs_EterPackManagerGetAddress)
 			{
 				MessageBoxA(0, xorstr("Address3 find fail").crypt_get(), 0, 0);
@@ -768,16 +766,16 @@ void MainRoutine()
 	if (!gs_EterPackManagerGetAddress)
 	{
 		// 2
-		auto pClassPtrGet = (TEterClassFindFunc)Relative2Absolute(vCallPtrs.at(1), 1, 5);
-		DebugLogf("pClassPtrGet: %p", (void*)pClassPtrGet);
+		auto pClassPtrGet = reinterpret_cast<TEterClassFindFunc>(Relative2Absolute(vCallPtrs.at(1), 1, 5));
+		DebugLogf("pClassPtrGet: %p", reinterpret_cast<void*>(pClassPtrGet));
 		if (!pClassPtrGet)
 		{
 			MessageBoxA(0, xorstr("Address2.1 find fail").crypt_get(), 0, 0);
 			return;
 		}
 
-		gs_EterPackManagerClassPtr = (uintptr_t)pClassPtrGet();
-		DebugLogf("2/ gs_EterPackManagerClassPtr: %p", (void*)gs_EterPackManagerClassPtr);
+		gs_EterPackManagerClassPtr = reinterpret_cast<uintptr_t>(pClassPtrGet());
+		DebugLogf("2/ gs_EterPackManagerClassPtr: %p", reinterpret_cast<void*>(gs_EterPackManagerClassPtr));
 		if (!gs_EterPackManagerClassPtr)
 		{
 			MessageBoxA(0, xorstr("Address2.2 find fail").crypt_get(), 0, 0);
@@ -788,8 +786,8 @@ void MainRoutine()
 		AnalyseArgCount(vCallPtrs.at(1), vCallPtrs.at(2));
 
 		// 3
-		gs_EterPackManagerGetAddress = (uintptr_t)Relative2Absolute(vCallPtrs.at(2), 1, 5);
-		DebugLogf("gs_EterPackManagerGetAddress: %p", (void*)gs_EterPackManagerGetAddress);
+		gs_EterPackManagerGetAddress = reinterpret_cast<uintptr_t>(Relative2Absolute(vCallPtrs.at(2), 1, 5));
+		DebugLogf("gs_EterPackManagerGetAddress: %p", reinterpret_cast<void*>(gs_EterPackManagerGetAddress));
 		if (!gs_EterPackManagerGetAddress)
 		{
 			MessageBoxA(0, xorstr("Address3 find fail").crypt_get(), 0, 0);
@@ -797,7 +795,13 @@ void MainRoutine()
 		}
 	}
 
-	CreateThread(0, 0, UnpackWorker, 0, 0, 0);
+	auto dwThreadId = 0UL;
+	auto hThread = CreateThread(0, 0, UnpackWorker, 0, 0, &dwThreadId);
+
+	DebugLogf("UnpackWorker thread created: %p(%u)", hThread, dwThreadId);
+
+	if (hThread && hThread != INVALID_HANDLE_VALUE)
+		CloseHandle(hThread);
 }
 
 DWORD WINAPI Initialize(LPVOID)
@@ -829,4 +833,3 @@ BOOL APIENTRY DllMain(HMODULE, DWORD, LPVOID)
 
 	return TRUE;
 }
-
