@@ -728,37 +728,40 @@ void MainRoutine()
 			dwCurrAddr++;
 		}
 		DebugLogf("1/ gs_EterPackManagerClassPtr: %p", reinterpret_cast<void*>(gs_EterPackManagerClassPtr));
-		if (gs_nCallConvType == CC_TYPE_STDCALL)
+		if (gs_EterPackManagerClassPtr)
 		{
-			if (AnalyseArgCount(vCallPtrs.at(0), vCallPtrs.at(1)))
-				gs_EterPackManagerGetAddress = reinterpret_cast<uintptr_t>(Relative2Absolute(vCallPtrs.at(1), 1, 5));
-
-			else if (AnalyseArgCount(vCallPtrs.at(1), vCallPtrs.at(2)))
-				gs_EterPackManagerGetAddress = reinterpret_cast<uintptr_t>(Relative2Absolute(vCallPtrs.at(2), 1, 5));
-
-			DebugLogf("gs_EterPackManagerGetAddress: %p", reinterpret_cast<void*>(gs_EterPackManagerGetAddress));
-			if (!gs_EterPackManagerGetAddress)
+			if (gs_nCallConvType == CC_TYPE_STDCALL)
 			{
-				MessageBoxA(0, xorstr("Address3 find fail").crypt_get(), 0, 0);
-				return;
+				if (AnalyseArgCount(vCallPtrs.at(0), vCallPtrs.at(1)))
+					gs_EterPackManagerGetAddress = reinterpret_cast<uintptr_t>(Relative2Absolute(vCallPtrs.at(1), 1, 5));
+
+				else if (AnalyseArgCount(vCallPtrs.at(1), vCallPtrs.at(2)))
+					gs_EterPackManagerGetAddress = reinterpret_cast<uintptr_t>(Relative2Absolute(vCallPtrs.at(2), 1, 5));
+
+				DebugLogf("gs_EterPackManagerGetAddress: %p", reinterpret_cast<void*>(gs_EterPackManagerGetAddress));
+				if (!gs_EterPackManagerGetAddress)
+				{
+					MessageBoxA(0, xorstr("Address3 find fail").crypt_get(), 0, 0);
+					return;
+				}
 			}
-		}
-		else // if (gs_EterPackManagerClassPtr)
-		{
-			gs_nCallConvType = CC_TYPE_THISCALL;
-
-			if (AnalyseArgCount(vCallPtrs.at(0), vCallPtrs.at(1)))
-				gs_EterPackManagerGetAddress = reinterpret_cast<uintptr_t>(Relative2Absolute(vCallPtrs.at(1), 1, 5));
-
-			else if (AnalyseArgCount(vCallPtrs.at(1), vCallPtrs.at(2)))
-				gs_EterPackManagerGetAddress = reinterpret_cast<uintptr_t>(Relative2Absolute(vCallPtrs.at(2), 1, 5));
-
-			// 3
-			DebugLogf("gs_EterPackManagerGetAddress: %p", reinterpret_cast<void*>(gs_EterPackManagerGetAddress));
-			if (!gs_EterPackManagerGetAddress)
+			else // if (gs_nCallConvType == CC_TYPE_THISCALL)
 			{
-				MessageBoxA(0, xorstr("Address3 find fail").crypt_get(), 0, 0);
-				return;
+				gs_nCallConvType = CC_TYPE_THISCALL;
+
+				if (AnalyseArgCount(vCallPtrs.at(0), vCallPtrs.at(1)))
+					gs_EterPackManagerGetAddress = reinterpret_cast<uintptr_t>(Relative2Absolute(vCallPtrs.at(1), 1, 5));
+
+				else if (AnalyseArgCount(vCallPtrs.at(1), vCallPtrs.at(2)))
+					gs_EterPackManagerGetAddress = reinterpret_cast<uintptr_t>(Relative2Absolute(vCallPtrs.at(2), 1, 5));
+
+				// 3
+				DebugLogf("gs_EterPackManagerGetAddress: %p", reinterpret_cast<void*>(gs_EterPackManagerGetAddress));
+				if (!gs_EterPackManagerGetAddress)
+				{
+					MessageBoxA(0, xorstr("Address3 find fail").crypt_get(), 0, 0);
+					return;
+				}
 			}
 		}
 	}
