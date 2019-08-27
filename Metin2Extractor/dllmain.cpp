@@ -786,7 +786,8 @@ void MainRoutine()
 		}
 
 		gs_nCallConvType = CC_TYPE_THISCALL;
-		AnalyseArgCount(vCallPtrs.at(1), vCallPtrs.at(2));
+		// AnalyseArgCount(vCallPtrs.at(1), vCallPtrs.at(2));
+		gs_nArgType = ARG_TYPE_3_ARG;
 
 		// 3
 		gs_EterPackManagerGetAddress = reinterpret_cast<uintptr_t>(Relative2Absolute(vCallPtrs.at(2), 1, 5));
