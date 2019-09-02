@@ -164,8 +164,8 @@ uintptr_t SearchPattern(std::shared_ptr <SPattern> pattern)
 	{
 		// DebugLogf("SearchPattern - Current region: %p-%u", mbi.BaseAddress, mbi.RegionSize);
 
-		if (reinterpret_cast<uint32_t>(mbi.BaseAddress) < 0x400000)
-			goto ContinueLoop;
+		//if (reinterpret_cast<uint32_t>(mbi.BaseAddress) < 0x400000)
+		//	goto ContinueLoop;
 
 		if (mbi.State != MEM_COMMIT)
 			goto ContinueLoop;
@@ -252,7 +252,8 @@ enum EArgTypes : uint8_t
 	ARG_TYPE_NULL,
 	ARG_TYPE_3_ARG,
 	ARG_TYPE_4_ARG,
-	ARG_TYPE_5_ARG
+	ARG_TYPE_5_ARG,
+	ARG_TYPE_6_ARG
 };
 enum ECCTypes : uint8_t
 {
@@ -266,6 +267,7 @@ typedef void* (__thiscall* TMappedFileLoad)(void* This);
 typedef bool(__thiscall* TEterPackManagerGet_3_thiscall)(void* This, void* rMappedFile, const char* c_szFileName, LPVOID* data);
 typedef bool(__thiscall* TEterPackManagerGet_4_thiscall)(void* This, void* rMappedFile, const char* c_szFileName, LPVOID* data, int a4_unk);
 typedef bool(__thiscall* TEterPackManagerGet_5_thiscall)(void* This, void* rMappedFile, const char* c_szFileName, LPVOID* data, const char* c_szFuncName, char a5_unk);
+typedef bool(__thiscall* TEterPackManagerGet_6_thiscall)(void* This, const char* c_szFileName, LPVOID* data, int a4_unk, int a5_unk, int a6_unk, void* rMappedFile); // origins
 typedef bool(__stdcall* TEterPackManagerGet_3_stdcall)(void* rMappedFile, const char* c_szFileName, LPVOID* data);
 typedef bool(__stdcall* TEterPackManagerGet_4_stdcall)(void* rMappedFile, const char* c_szFileName, LPVOID* data, int a4_unk);
 typedef bool(__stdcall* TEterPackManagerGet_5_stdcall)(void* rMappedFile, const char* c_szFileName, LPVOID* data, const char* c_szFuncName, char a5_unk);
@@ -330,7 +332,7 @@ bool packGet(const std::string& stInputFileName, std::string stOutputFileName)
 			);
 		}
 	}
-	else // 5 arg
+	else if (gs_nArgType == ARG_TYPE_5_ARG) // 5 arg
 	{
 		if (gs_nCallConvType == CC_TYPE_THISCALL)
 		{
@@ -345,6 +347,15 @@ bool packGet(const std::string& stInputFileName, std::string stOutputFileName)
 				reinterpret_cast<void*>(&gs_vMappedFileBuffer[0]), stInputFileName.c_str(), &pData, "...", 0
 			);
 		}
+	}
+	else if (gs_nArgType == ARG_TYPE_6_ARG)
+	{
+		// origins
+		bRet = reinterpret_cast<TEterPackManagerGet_6_thiscall>(gs_EterPackManagerGetAddress)(
+			reinterpret_cast<void*>(gs_EterPackManagerClassPtr),
+			stInputFileName.c_str(), &pData, 63754643, 1, 2,
+			reinterpret_cast<void*>(&gs_vMappedFileBuffer[0])
+		);
 	}
 	DebugLogf("Result: %d Data ptr: %p", bRet ? 1 : 0, pData);
 	if (!bRet || !pData)
@@ -450,6 +461,7 @@ DWORD WINAPI UnpackWorker(LPVOID)
 		case ARG_TYPE_3_ARG:
 		case ARG_TYPE_4_ARG:
 		case ARG_TYPE_5_ARG:
+		case ARG_TYPE_6_ARG:
 			break;
 		default:
 			MessageBoxA(0, xorstr("Unknown arg count").crypt_get(), std::to_string(gs_nArgType).c_str(), 0);
@@ -508,6 +520,8 @@ bool AnalyseArgCount(uintptr_t pStartAddr, uintptr_t pEndAddr)
 		gs_nArgType = ARG_TYPE_4_ARG;
 	else if (nPushCount == 5)
 		gs_nArgType = ARG_TYPE_5_ARG;
+	else if (nPushCount == 6)
+		gs_nArgType = ARG_TYPE_6_ARG;
 
 	return (gs_nArgType != ARG_TYPE_NULL);
 }
@@ -550,6 +564,8 @@ void MainRoutine()
 						gs_nArgType = ARG_TYPE_4_ARG;
 					else if (nArgCount == 5)
 						gs_nArgType = ARG_TYPE_5_ARG;
+					else if (nArgCount == 6)
+						gs_nArgType = ARG_TYPE_6_ARG;
 				} break;
 
 				case 3: // Call conv. type
